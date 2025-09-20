@@ -14,12 +14,12 @@ from xml.dom import minidom
 # ----------------------------------------------------
 PODCAST_URL = "YOUR FEED HERE"
 DAYS_TO_COMBINE = 7
-OUTPUT_FORMAT = "m4a"
+OUTPUT_FORMAT = "Use File Format from RSS Feed. Ex: mp3, M4a, wav" 
 TEMP_DIR = "YOUR TEMP FOLDER"
 OUTPUT_DIR = "OutputFolder" # New: Directory for final output files
 RSS_FEED_FILENAME = "RSS_Name.xml"
 EPISODE_RETENTION_DAYS = 30
-BASE_URL = "http://127.0.0.1:8008/YOUR_Folder"  # Set this to your phone server's address and port
+BASE_URL = "http://127.0.0.1:8080/YOUR_Folder"  # Set this to your phone server's address and port
 # ----------------------------------------------------
 
 def sanitize_filename(name):
@@ -80,25 +80,23 @@ def parse_ffmpeg_output(line):
         seconds = int(time_match.group(3))
         return hours * 3600 + minutes * 60 + seconds
     return None
-
-def combine_audio_files(file_list, output_path, bitrate, sample_rate, total_duration):
+def combine_audio_files(file_list, output_path, total_duration):
     with open("filelist.txt", "w") as f:
         for file in file_list:
             f.write(f"file '{os.path.abspath(file)}'\n")
 
-    print("Combining audio files...")
+    print("Combining audio files without re-encoding...")
     command = [
         'ffmpeg',
         '-f', 'concat',
         '-safe', '0',
         '-i', 'filelist.txt',
-        '-c:a', 'aac',
-        '-b:a', f'{bitrate}k',
-        '-ar', str(sample_rate),
+        '-c', 'copy',
+        '-threads', '4',
         '-y',
         output_path
     ]
-    
+
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
 
@@ -111,7 +109,7 @@ def combine_audio_files(file_list, output_path, bitrate, sample_rate, total_dura
                     time_rem_str = str(timedelta(seconds=round(time_remaining)))
                     print(f"Progress: {percentage:.1f}% - Time Remaining: {time_rem_str}", end='\r')
         print("\nCombination successful.")
-        
+
         process.wait()
         os.remove("filelist.txt")
         return output_path
@@ -161,11 +159,17 @@ def main():
     
     print(f"Found {len(episodes_to_combine)} episodes to combine.")
     for entry in episodes_to_combine:
-        audio_url = entry.enclosures[0].href
         filename = sanitize_filename(f"{entry.title}.mp3")
-        filepath = download_file(audio_url, filename, TEMP_DIR)
-        
-        if filepath:
+        filepath = os.path.join(TEMP_DIR, filename)
+
+        if not os.path.exists(filepath):
+            # File does not exist, so download it
+            filepath = download_file(entry.enclosures[0].href, filename, TEMP_DIR)
+        else:
+            # File already exists, skip download
+            print(f"File '{filename}' already exists. Skipping download.")
+
+        if filepath and os.path.exists(filepath):
             downloaded_files.append(filepath)
             episode_titles.append(entry.title)
             
@@ -177,7 +181,7 @@ def main():
                 bitrates.append(bitrate)
                 sample_rates.append(sample_rate)
         else:
-            print(f"File not found for episode '{entry.title}' at {filepath}. Skipping.")
+            print(f"File not found for episode '{entry.title}'. Skipping.")
 
     if not downloaded_files:
         print("No files were found in the temp directory. Exiting.")
@@ -199,7 +203,7 @@ def main():
     # Calculate total duration before combining
     total_duration = sum(get_file_duration(f) for f in downloaded_files)
     
-    combined_audio_path = combine_audio_files(downloaded_files, final_output_path, target_bitrate, target_sample_rate, total_duration)
+    combined_audio_path = combine_audio_files(downloaded_files, final_output_path, total_duration)
     
     if combined_audio_path:
         try:
@@ -254,7 +258,7 @@ def main():
         
         first_item = channel.find('item')
         if first_item is not None:
-            channel.insert(channel.getchildren().index(first_item), item)
+            channel.insert(list(channel).index(first_item), item)
         else:
             channel.append(item)
         
@@ -293,10 +297,18 @@ def main():
             f.write(pretty_xml)
         print(f"RSS feed updated and saved to {rss_path}")
 
+    # Don't delete temp files for already downloaded podcasts
     for file in os.listdir(TEMP_DIR):
-        os.remove(os.path.join(TEMP_DIR, file))
-    os.rmdir(TEMP_DIR)
-    print("Cleanup complete.")
+        if file not in [os.path.basename(f) for f in downloaded_files]:
+            os.remove(os.path.join(TEMP_DIR, file))
+
+    if not os.listdir(TEMP_DIR):
+        os.rmdir(TEMP_DIR)
+        print("Cleanup complete.")
+    else:
+        print("Cleanup complete, temp directory not empty.")
     
 if __name__ == "__main__":
     main()
+
+
